@@ -303,6 +303,8 @@ subscription than the app service environment, please use the resource ID for --
             c.argument('timeout', type=int, options_list=['--timeout', '-t'],
                        help='Configurable timeout in seconds for checking the status of deployment',
                        validator=validate_timeout_value)
+            c.argument('is_flex', help='function app is hosted on consumption v2 plan',
+                       arg_type=get_three_state_flag(return_label=True))
 
         with self.argument_context(scope + ' config appsettings list') as c:
             c.argument('name', arg_type=(webapp_name_arg_type if scope == 'webapp' else functionapp_name_arg_type),

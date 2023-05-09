@@ -543,7 +543,7 @@ def update_azure_storage_account(cmd, resource_group_name, name, custom_id, stor
     return result.properties
 
 
-def enable_zip_deploy_functionapp(cmd, resource_group_name, name, src, build_remote=False, timeout=None, slot=None):
+def enable_zip_deploy_functionapp(cmd, resource_group_name, name, src, build_remote=False, timeout=None, slot=None, is_flex=False):
     client = web_client_factory(cmd.cli_ctx)
     app = client.web_apps.get(resource_group_name, name)
     if app is None:
@@ -569,6 +569,9 @@ def enable_zip_deploy_functionapp(cmd, resource_group_name, name, src, build_rem
     # if linux consumption, validate that AzureWebJobsStorage app setting exists
     if is_consumption and app.reserved:
         validate_zip_deploy_app_setting_exists(cmd, resource_group_name, name, slot)
+
+    if is_flex:
+        return enable_zip_deploy_flex(cmd, resource_group_name, name, src, timeout, slot, build_remote)
 
     if (not build_remote) and is_consumption and app.reserved:
         return upload_zip_to_storage(cmd, resource_group_name, name, src, slot)
@@ -614,6 +617,52 @@ def enable_zip_deploy(cmd, resource_group_name, name, src, timeout=None, slot=No
     if res.status_code == 202:
         response = _check_zip_deployment_status(cmd, resource_group_name, name, deployment_status_url,
                                                 headers, timeout)
+        return response
+
+    # check if there's an ongoing process
+    if res.status_code == 409:
+        raise UnclassifiedUserFault("There may be an ongoing deployment or your app setting has "
+                                    "WEBSITE_RUN_FROM_PACKAGE. Please track your deployment in {} and ensure the "
+                                    "WEBSITE_RUN_FROM_PACKAGE app setting is removed. Use 'az webapp config "
+                                    "appsettings list --name MyWebapp --resource-group MyResourceGroup --subscription "
+                                    "MySubscription' to list app settings and 'az webapp config appsettings delete "
+                                    "--name MyWebApp --resource-group MyResourceGroup --setting-names <setting-names> "
+                                    "to delete them.".format(deployment_status_url))
+
+    # check if an error occured during deployment
+    if res.status_code:
+        raise AzureInternalError("An error occured during deployment. Status Code: {}, Details: {}"
+                                 .format(res.status_code, res.text))
+
+
+def enable_zip_deploy_flex(cmd, resource_group_name, name, src, timeout=None, slot=None, build_remote=False):
+    logger.warning("Calling /Deploy/Zip for deployment on flex with build_remote = "+ str(build_remote))
+
+    scm_url = "http://localhost:32799"
+    zip_url = scm_url + '/api/Deploy/Zip?RemoteBuild=' + str(build_remote) + '&Deployer=az_cli'
+    deployment_status_url = "" #scm_url + '/api/deployments/latest'
+
+    additional_headers = {"Content-Type": "application/zip", "Cache-Control": "no-cache"}
+    #headers = get_scm_site_headers(cmd.cli_ctx, name, resource_group_name, slot, additional_headers=additional_headers)
+
+    import urllib3
+    headers = urllib3.util.make_headers()
+    headers["x-ms-site-restricted-token"] = "jbfqkjebfkjbewvg"
+
+    import os
+    import requests
+    from azure.cli.core.util import should_disable_connection_verify
+    # Read file content
+
+    with open(os.path.realpath(os.path.expanduser(src)), 'rb') as fs:
+        zip_content = fs.read()
+        logger.warning("Starting zip deployment. This operation can take a while to complete ...")
+        res = requests.post(zip_url, data=zip_content, headers=headers, verify=not should_disable_connection_verify())
+        logger.warning("Deployment endpoint responded with status code %d", res.status_code)
+
+    # check the status of async deployment
+    if res.status_code == 202:
+        response = {"Message":"Deployment request placed successfully."} #_check_zip_deployment_status(cmd, resource_group_name, name, deployment_status_url, headers, timeout)
         return response
 
     # check if there's an ongoing process
